@@ -1,0 +1,18 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# local dependencies
+merkle-tree.workspace = true
+crypto.workspace = true
+
+# external dependencies
+clap.workspace = true
+sp-crypto-hashing.workspace = true
+itertools.workspace = true
+sodiumoxide.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs = "5.0.1"
