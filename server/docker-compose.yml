@@ -1,0 +1,10 @@
+version: '3'
+services:
+  server:
+    build:
+      context: ../             # Set the context to the workspace root (where Cargo.toml is located)
+      dockerfile: ./server/Dockerfile  # Path to the Dockerfile inside the server directory
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    ports:
+      - "8080:8080"               # Expose port 8080 for accessing the server

@@ -1,11 +1,10 @@
-use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use ed25519_dalek::{Signature, Verifier};
-use merkle_tree::{HashDigest, MerkleProof, MerkleTree}; // Assuming you have a Merkle tree implementation
-use rusqlite::{params, Connection};
+use merkle_tree::MerkleTree;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use sp_crypto_hashing::blake2_256;
-use std::sync::Mutex;
+use std::env;
+use tokio_postgres::{Client, NoTls};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct EncryptedFileRequest {
@@ -19,23 +18,26 @@ struct FileRequest {
     index: usize,
     merkle_root: String, // hex encoded hash digest ([u8; 32])
 }
+
+// Application state struct to share PostgreSQL client across handlers
 struct AppState {
-    conn: Mutex<Connection>, // SQLite connection
+    db: Client,
 }
 
+// Function to verify signatures
 fn verify_signature(verifying_key: [u8; 32], signature: Vec<u8>, message: &[u8]) -> bool {
-    let signature = Signature::from_slice(signature.as_slice()).expect("Invalid signature");
-    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key)
-        .expect("Invalid verifying key");
+    let signature = Signature::from_slice(&signature).expect("Invalid signature");
+    let verifying_key =
+        ed25519_dalek::VerifyingKey::from_bytes(&verifying_key).expect("Invalid verifying key");
     verifying_key.verify(message, &signature).is_ok()
 }
 
-#[post("/upload")]
+// Upload endpoint to handle file uploads and store in PostgreSQL
 async fn upload_files(
     data: web::Data<AppState>,
     request: web::Json<EncryptedFileRequest>,
 ) -> impl Responder {
-    let conn = data.conn.lock().unwrap();
+    let client = &data.db;
 
     // Verify the signature
     let file_hashes: Vec<[u8; 32]> = request
@@ -57,104 +59,91 @@ async fn upload_files(
     let merkle_tree = MerkleTree::from(file_hashes);
     let merkle_root = hex::encode(merkle_tree.root());
 
-    // Store Merkle tree and files in SQLite
+    // Insert files and Merkle root into PostgreSQL
     for (index, file) in request.files.iter().enumerate() {
-        conn.execute(
-            "INSERT INTO files (merkle_root, file_index, file_content) VALUES (?1, ?2, ?3)",
-            params![merkle_root, index, file],
-        )
-        .unwrap();
+        let query = "INSERT INTO files (merkle_root, file_index, file_content) VALUES ($1, $2, $3)";
+        if let Err(e) = client
+            .execute(query, &[&merkle_root, &(index as i32), file])
+            .await
+        {
+            eprintln!("Error inserting into database: {}", e);
+            return HttpResponse::InternalServerError().body("Failed to upload files");
+        }
     }
 
     HttpResponse::Ok().json(merkle_root)
 }
 
-#[post("/get_file")]
+// Get file endpoint to retrieve file and Merkle proof from PostgreSQL
 async fn get_file(data: web::Data<AppState>, request: web::Json<FileRequest>) -> impl Responder {
-    let conn = data.conn.lock().unwrap();
-    debug_print_all_rows(&conn);
-    // Query the file from the database
-    let mut stmt = conn
-        .prepare("SELECT file_content FROM files WHERE merkle_root = ?1 AND file_index = ?2")
-        .unwrap();
-    let file_content: Vec<u8> = stmt
-        .query_row(params![request.merkle_root, request.index], |row| {
-            row.get(0)
-        })
-        .expect("Row not found");
+    let client = &data.db;
+
+    // Query the file content
+    let query = "SELECT file_content FROM files WHERE merkle_root = $1 AND file_index = $2";
+    let row = match client
+        .query_one(query, &[&request.merkle_root, &(request.index as i32)])
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            eprintln!("Error querying database: {}", e);
+            return HttpResponse::NotFound().body("File not found");
+        }
+    };
+
+    let file_content: Vec<u8> = row.get(0);
 
     // Construct Merkle proof
-    let mut stmt = conn
-        .prepare("SELECT file_content FROM files WHERE merkle_root = ?1")
-        .unwrap();
-    let files: Vec<[u8; 32]> = stmt
-        .query_map(params![request.merkle_root], |row| {
-            let file: Vec<u8> = row.get(0)?;
-            Ok(blake2_256(file.as_slice()))
+    let query_all = "SELECT file_content FROM files WHERE merkle_root = $1";
+    let rows = client
+        .query(query_all, &[&request.merkle_root])
+        .await
+        .expect("Error fetching files");
+
+    let files: Vec<[u8; 32]> = rows
+        .iter()
+        .map(|row| {
+            let file: Vec<u8> = row.get(0);
+            blake2_256(&file)
         })
-        .unwrap()
-        .map(|res| res.unwrap())
         .collect();
 
     let merkle_tree = MerkleTree::from(files);
     let proof = merkle_tree
         .proof(request.index)
-        .expect("Proof generation failed");
+        .expect("Failed to generate Merkle proof");
 
     HttpResponse::Ok().json((file_content, proof))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let conn = Connection::open("files.db").unwrap();
+    // Fetch database URL from environment variables (for Docker or production environments)
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    // Create a table if it doesn't exist
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY,
-            merkle_root TEXT NOT NULL,
-            file_index INTEGER NOT NULL,
-            file_content BLOB NOT NULL
-        )",
-        [],
-    )
-    .unwrap();
+    // Connect to PostgreSQL
+    let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+        .await
+        .expect("Failed to connect to PostgreSQL");
 
-    let app_state = web::Data::new(AppState {
-        conn: Mutex::new(conn),
+    // Spawn the connection manager
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("Connection error: {}", e);
+        }
     });
 
+    // Prepare application state
+    let app_state = web::Data::new(AppState { db: client });
+
+    // Create Actix Web server
     HttpServer::new(move || {
         App::new()
-            .app_data(app_state.clone())
-            .service(upload_files)
-            .service(get_file)
+            .app_data(app_state.clone()) // Pass database connection to all handlers
+            .route("/upload", web::post().to(upload_files))
+            .route("/get_file", web::post().to(get_file))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))? // Bind to all network interfaces, required in Docker containers
     .run()
     .await
-}
-
-fn debug_print_all_rows(conn: &rusqlite::Connection) {
-    let mut stmt = conn.prepare("SELECT id, merkle_root, file_index, file_content FROM files").expect("Failed to prepare debug statement");
-
-    let rows = stmt
-        .query_map([], |row| {
-            let id: i32 = row.get(0)?;
-            let merkle_root: String = row.get(1)?;
-            let file_index: i32 = row.get(2)?;
-            let file_content: Vec<u8> = row.get(3)?; // Assuming file_content is stored as BLOB
-
-            Ok((id, merkle_root, file_index, file_content))
-        })
-        .expect("Failed to execute debug query");
-
-    for row in rows {
-        let (id, merkle_root, file_index, file_content) = row.expect("Failed to get row data");
-        println!("ID: {}, Merkle Root: {}, File Index: {}, File Content (hex): {}",
-                 id,
-                 merkle_root,
-                 file_index,
-                 hex::encode(file_content)); // Display file content as a hex string
-    }
 }

@@ -2,7 +2,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use sodiumoxide::crypto::secretbox;
 use ssh_keys::openssh::parse_private_key;
-use ssh_keys::{PrivateKey, PublicKey};
+use ssh_keys::PrivateKey;
 use std::error::Error;
 use std::fs;
 use std::fs::File;

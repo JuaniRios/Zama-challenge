@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 // We use Blake2b instead of Sha2 since its around 2x faster with the same security level.
 // I also considered using TwoX since it's even faster than Blake2b, but it's not cryptographically secure.
 use sp_crypto_hashing::blake2_256;
@@ -37,7 +38,6 @@ pub type HashDigest = [u8; 32];
 pub type MerkleProof = Vec<(HashDigest, bool)>;
 
 pub struct MerkleTree {
-    depth: usize,
     nodes: Vec<Vec<HashDigest>>,
 }
 impl From<Vec<HashDigest>> for MerkleTree {
@@ -59,7 +59,6 @@ impl From<Vec<HashDigest>> for MerkleTree {
                         let left_node = *left_node;
                         let right_node = *right_node;
                         let combined = [left_node, right_node].concat();
-                        let hash = blake2_256(&combined);
                         new_layer_nodes.push(blake2_256(&combined));
                     }
                     [left_node] => {
@@ -73,7 +72,6 @@ impl From<Vec<HashDigest>> for MerkleTree {
         }
 
         MerkleTree {
-            depth: tree_depth,
             nodes,
         }
     }
@@ -123,14 +121,32 @@ pub fn verify_proof(proof: MerkleProof, root: HashDigest, file: HashDigest) -> b
 
 // Reads all the files in a folder, hashes them, and constructs a Merkle tree from the hashes.
 pub fn construct_tree_from_folder_path(folder_path: &str) -> MerkleTree {
-    let hashed_files: Vec<HashDigest> = fs::read_dir(folder_path)
+    // Collect directory entries into a vector
+    let mut entries: Vec<PathBuf> = fs::read_dir(folder_path)
         .expect("Failed to read directory")
-        .map(|file| {
-            let file = file.expect("Failed to get file");
-            let file_path = file.path();
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .collect();
+
+    // Sort the entries numerically by extracting and parsing the file names
+    entries.sort_by_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|s| {
+                // Remove file extension if present
+                let s = s.split('.').next().unwrap_or(s);
+                s.parse::<u32>().ok()
+            })
+            .unwrap_or(0)
+    });
+
+    // Read and hash the files in the sorted order
+    let hashed_files: Vec<HashDigest> = entries
+        .iter()
+        .map(|file_path| {
             let file_content = fs::read(file_path).expect("Failed to read file");
             blake2_256(&file_content)
         })
         .collect();
+
     MerkleTree::from(hashed_files)
 }
