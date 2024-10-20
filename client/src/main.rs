@@ -293,7 +293,7 @@ async fn restore_encrypted_file_from_cloud(merkle_root_hex: String, file_index: 
         .expect("Couldn't read the ed25519 private key file");
 
     // Construct the message to sign: hash(index_bytes || merkle_root_bytes)
-    let index_bytes = (file_index as u32).to_be_bytes();
+    let index_bytes = file_index.to_be_bytes();
     let merkle_root_bytes = hex::decode(&merkle_root_hex).expect("Failed to decode merkle root");
 
     let mut message_data = Vec::new();
