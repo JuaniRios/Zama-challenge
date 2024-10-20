@@ -1,21 +1,16 @@
 use clap::{Parser, Subcommand};
+use crypto;
 use dirs::config_dir;
+use ed25519_dalek::ed25519::signature::Keypair;
+use ed25519_dalek::{Signature, Signer, VerifyingKey};
 use itertools::Itertools;
+use merkle_tree::{HashDigest, MerkleProof};
+use reqwest::Client;
+use serde::Serialize;
 use sp_crypto_hashing::blake2_256;
-use std::collections::HashMap;
-use std::error::Error;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-// Use the custom Merkle tree implementation provided
-// use merkle_tree::{MerkleProof, MerkleTree, verify_proof};
-// use hkdf::Hkdf;
-// use sha2::Sha256;
-// use sodiumoxide::crypto::secretbox;
-// use ssh_keys::openssh::parse_private_key;
-// use ssh_keys::PrivateKey;
-use crypto;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -58,7 +53,21 @@ enum Commands {
     },
 }
 
-fn main() {
+#[derive(Serialize)]
+struct EncryptedFileRequest {
+    files: Vec<Vec<u8>>,
+    verifying_key: [u8; 32],
+    signature: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct FileRequest {
+    index: usize,
+    merkle_root: String, // hex encoded hash digest ([u8; 32])
+}
+
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -85,18 +94,14 @@ fn main() {
         }
         /// Deletes the encrypted files associated with a Merkle root
         Commands::SendToCloudAndDeleteEncryptedFiles { merkle_root } => {
-            todo!()
+            send_to_cloud_and_delete_encrypted_files(merkle_root).await;
         }
         /// Restores an encrypted file from the specified Merkle root using a Merkle proof
         Commands::RestoreEncryptedFileFromCloud {
             merkle_root,
             file_index,
         } => {
-            todo!()
-        }
-        /// Decrypts all the files associated with a Merkle root
-        Commands::DecryptFiles { merkle_root } => {
-            todo!()
+            restore_encrypted_file_from_cloud(merkle_root, file_index).await;
         }
     };
 }
@@ -180,7 +185,6 @@ fn encrypt_and_merkelize_files(folder_path: &str) {
     fs::rename(&temp_folder, &merkle_root_folder).expect("Failed to rename temp folder");
 }
 
-
 // Function to show all stored Merkle roots
 fn show_merkle_roots() {
     let merkle_roots_path = get_merkle_roots_folder_path();
@@ -201,5 +205,108 @@ fn show_merkle_roots() {
                 merkle_root_folder.file_name().unwrap().to_string_lossy()
             );
         }
+    }
+}
+
+async fn send_to_cloud_and_delete_encrypted_files(merkle_root: String) {
+    let client = Client::new();
+    let url = "http://127.0.0.1:8080/upload"; // Modify with the correct server URL
+
+    // For this example, you would gather the encrypted files and public key details as needed
+    let merkle_root_folder = get_merkle_roots_folder_path().join(merkle_root);
+    let encrypted_files_folder = merkle_root_folder.join("encrypted_files");
+    let encrypted_files: Vec<Vec<u8>> = fs::read_dir(&encrypted_files_folder)
+        .expect("Failed to read directory")
+        .map(|entry| {
+            let entry = entry.expect("Failed to get entry");
+            let file_path = entry.path();
+            let mut file = File::open(&file_path).expect("Failed to open file");
+            let mut file_content = Vec::new();
+            file.read_to_end(&mut file_content)
+                .expect("Failed to read file content");
+            file_content
+        })
+        .collect();
+
+    let signing_key = crypto::load_ed25519_signing_key_from_path(get_ssh_key_path())
+        .expect("Couldn't read the ed25519 private key file");
+
+    // Verify the signature
+    let file_hashes: Vec<[u8; 32]> = encrypted_files
+        .iter()
+        .map(|file| blake2_256(file.as_slice())) // Example hash function, change as needed
+        .collect();
+    let files_combined_hash = blake2_256(&file_hashes.concat());
+
+    let signature = signing_key.sign(files_combined_hash.as_slice());
+    let verifying_key = signing_key.verifying_key();
+
+    let request_body = EncryptedFileRequest {
+        files: encrypted_files,
+        verifying_key: verifying_key.to_bytes(),
+        signature: signature.to_vec(),
+    };
+
+    let response = client
+        .post(url)
+        .json(&request_body)
+        .send()
+        .await.expect("Failed to send files to the server");
+
+    if response.status().is_success() {
+        println!("Files uploaded successfully. Deleting local files...");
+        // Code to delete the encrypted_files_folder
+        fs::remove_dir_all(&encrypted_files_folder).expect("Failed to delete local files");
+    } else {
+        println!("Failed to upload files. Status: {:?}", response.status());
+    }
+}
+
+async fn restore_encrypted_file_from_cloud(merkle_root_hex: String, file_index: u32) {
+    let merkle_root: HashDigest = hex::decode(merkle_root_hex.clone()).expect("Failed to decode hex").try_into().expect("Invalid hash length");
+    let client = Client::new();
+    let url = "http://127.0.0.1:8080/get_file"; // Modify with the correct server URL
+
+    let request_body = FileRequest {
+        index: file_index as usize,
+        merkle_root: merkle_root_hex.clone(),
+    };
+
+    let response = client
+        .post(url)
+        .json(&request_body)
+        .send()
+        .await.expect("Failed to request the file from the server");
+
+    if response.status().is_success() {
+        let (encrypted_file_content, merkle_proof): (Vec<u8>, MerkleProof) = response
+            .json()
+            .await.expect("Failed to deserialize the server response");
+        let file_digest = blake2_256(&encrypted_file_content);
+
+        assert!(
+            merkle_tree::verify_proof(merkle_proof, merkle_root, file_digest),
+            "Merkle proof verification failed"
+        );
+
+        // Save the file locally
+        let decrypted_path = get_merkle_roots_folder_path()
+            .join(merkle_root_hex)
+            .join("decrypted_files");
+
+
+        // Ensure the `decrypted_files` directory exists
+        fs::create_dir_all(&decrypted_path).expect("Failed to create decrypted_files directory");
+
+        let file_path = decrypted_path.join(file_index.to_string()).to_string_lossy().to_string();
+
+        dbg!(&encrypted_file_content);
+        let decryption_key = crypto::load_ed25519_private_key_and_derive_symmetric_key(get_ssh_key_path())
+            .expect("Failed to derive decryption key");
+        crypto::decrypt_file(encrypted_file_content, &file_path, &decryption_key)
+            .expect("Failed to decrypt file");
+
+    } else {
+        println!("Failed to retrieve file. Status: {:?}", response.status());
     }
 }

@@ -2,7 +2,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use sodiumoxide::crypto::secretbox;
 use ssh_keys::openssh::parse_private_key;
-use ssh_keys::PrivateKey;
+use ssh_keys::{PrivateKey, PublicKey};
 use std::error::Error;
 use std::fs;
 use std::fs::File;
@@ -62,6 +62,29 @@ pub fn load_ed25519_private_key_and_derive_symmetric_key(
     Ok(symmetric_key)
 }
 
+pub fn load_ed25519_signing_key_from_path(
+    ssh_key_path: String,
+) -> Result<ed25519_dalek::SigningKey, Box<dyn Error>> {
+    // Read the SSH private key file
+    let ssh_key_path = Path::new(&ssh_key_path);
+    let key_content_bytes = fs::read(ssh_key_path)?;
+    let key_content_str = String::from_utf8_lossy(&key_content_bytes);
+
+    // Parse the SSH private key (supports OpenSSH format)
+    let ssh_private_key = parse_private_key(&key_content_str)?
+        .first()
+        .ok_or("No key found")?
+        .to_owned();
+    // Extract the key bytes
+    let key_bytes = match ssh_private_key {
+        PrivateKey::Rsa { .. } => return Err("Only Ed25519 keys are supported".into()),
+        PrivateKey::Ed25519(bytes) => bytes,
+    };
+
+    ed25519_dalek::SigningKey::from_keypair_bytes(&key_bytes)
+        .map_err(|_| "Failed to create signing key".into())
+}
+
 /// Encrypts a file using the provided symmetric key.
 ///
 /// # Arguments
@@ -109,22 +132,17 @@ pub fn encrypt_file(
 ///
 /// Returns an error if file operations fail or decryption fails.
 pub fn decrypt_file(
-    input_path: &str,
+    input_bytes: Vec<u8>,
     output_path: &str,
     key: &secretbox::Key,
 ) -> Result<(), Box<dyn Error>> {
-    // Read the encrypted file contents into a buffer
-    let mut file = File::open(input_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
     // Ensure the buffer is at least as long as the nonce
-    if buffer.len() < secretbox::NONCEBYTES {
+    if input_bytes.len() < secretbox::NONCEBYTES {
         return Err("Encrypted file is too short.".into());
     }
 
     // Extract the nonce and ciphertext
-    let (nonce_bytes, ciphertext) = buffer.split_at(secretbox::NONCEBYTES);
+    let (nonce_bytes, ciphertext) = input_bytes.split_at(secretbox::NONCEBYTES);
     let nonce = secretbox::Nonce::from_slice(nonce_bytes).ok_or("Failed to read nonce")?;
 
     // Decrypt the file content
