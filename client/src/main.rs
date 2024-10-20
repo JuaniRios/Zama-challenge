@@ -111,7 +111,7 @@ fn set_ssh_key_path(key_path: String) {
 fn get_ssh_key_path() -> String {
     let config_path = get_config_file_path();
     if !config_path.exists() {
-        panic!("SSH key path not set. Please run SetSSHKeyLocation.");
+        panic!("SSH key path not set. Please run set-ssh-key-location.");
     }
     fs::read_to_string(&config_path).expect("Failed to read key path")
 }
@@ -186,8 +186,10 @@ fn encrypt_and_merkelize_files(folder_path: &str) {
     let merkle_root_hex_encoded = hex::encode(merkle_root);
 
     // Rename temp folder to Merkle root
-    let merkle_root_folder = get_merkle_roots_folder_path().join(merkle_root_hex_encoded);
+    let merkle_root_folder = get_merkle_roots_folder_path().join(merkle_root_hex_encoded.clone());
     fs::rename(&temp_folder, &merkle_root_folder).expect("Failed to rename temp folder");
+    println!("Merkle root: {}", merkle_root_hex_encoded);
+
 }
 
 // Function to show all stored Merkle roots

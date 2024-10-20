@@ -19,6 +19,8 @@ struct EncryptedFileRequest {
 struct FileRequest {
     index: usize,
     merkle_root: String, // hex encoded hash digest ([u8; 32])
+    // A signature of the hash of (index + merkle_root) signed by the verifying key used previously when uploading the files.
+    signature: Vec<u8>
 }
 
 // Application state struct to share PostgreSQL client across handlers
