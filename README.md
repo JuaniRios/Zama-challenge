@@ -35,7 +35,7 @@ The CLI will send the server the merkle_root, index, and a signature over the ha
 - A valid concern is that our app reading into the .ssh private key can lead to security vulnerabilities. So another approach could be for this app to generate its own crypto keys and store it in the config. But reusing the ssh keys seemed more fun and a bigger challenge so I went with that.
 - If the client trusts fully the server, then maybe we don't need to encrypt the files before sending them/ constructing the Merkle tree. But from what I hear of ZAMA, this approach is more in line with their philosophy.
 
-## Full Setup
+## Full Setup / DEMO
 This setup assumes you are using a Mac with Apple Silicon.
 1) Add a .env file inside the server folder with the following:
 ```
