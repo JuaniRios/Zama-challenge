@@ -47,7 +47,7 @@ impl From<Vec<HashDigest>> for MerkleTree {
         // Leaf nodes are the hashed files. We start by filling the leaf nodes with empty leaves and then we fill the ones that have files.
         let leaf_nodes = hashed_files;
 
-        // once curren_depth == tree_depth, we have the root node
+        // once current_depth == tree_depth, we have the root node
         let mut current_depth = 0usize;
         let mut nodes = vec![leaf_nodes];
         while current_depth < tree_depth {
@@ -71,15 +71,13 @@ impl From<Vec<HashDigest>> for MerkleTree {
             nodes.push(new_layer_nodes);
         }
 
-        MerkleTree {
-            nodes,
-        }
+        MerkleTree { nodes }
     }
 }
 
 impl MerkleTree {
     pub fn root(&self) -> HashDigest {
-        self.nodes.last().unwrap().first().unwrap().clone()
+        *self.nodes.last().unwrap().first().unwrap()
     }
     pub fn proof(&self, file_index: usize) -> Result<Vec<(HashDigest, bool)>, &str> {
         if file_index > self.nodes[0].len() - 1 {
@@ -97,7 +95,7 @@ impl MerkleTree {
 
             if let Some(sibling_node) = layer.get(sibling_index) {
                 let is_left = sibling_index < current_index;
-                proof.push((sibling_node.clone(), is_left));
+                proof.push((*sibling_node, is_left));
             }
             current_index /= 2;
         }

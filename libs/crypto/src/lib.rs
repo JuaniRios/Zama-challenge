@@ -9,23 +9,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
-/// Loads the Ed25519 private key from the specified SSH key file and derives a symmetric key from it.
-///
-/// # Arguments
-///
-/// * `ssh_key_path` - The file path to the SSH private key.
-///
-/// # Returns
-///
-/// * `Result<Key, Box<dyn Error>>` - The derived symmetric key or an error.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// - The key file cannot be read.
-/// - The key is not an Ed25519 key.
-/// - The key cannot be parsed.
-/// - The symmetric key derivation fails.
+/// Loads the Ed25519 private key from the specified SSH key file and derives a symmetric encryption key from it.
 pub fn load_ed25519_private_key_and_derive_symmetric_key(
     ssh_key_path: String,
 ) -> Result<secretbox::Key, Box<dyn Error>> {
@@ -62,6 +46,7 @@ pub fn load_ed25519_private_key_and_derive_symmetric_key(
     Ok(symmetric_key)
 }
 
+// Loads the Ed25519_dalek signing key from the specified SSH key file.
 pub fn load_ed25519_signing_key_from_path(
     ssh_key_path: String,
 ) -> Result<ed25519_dalek::SigningKey, Box<dyn Error>> {
@@ -85,17 +70,7 @@ pub fn load_ed25519_signing_key_from_path(
         .map_err(|_| "Failed to create signing key".into())
 }
 
-/// Encrypts a file using the provided symmetric key.
-///
-/// # Arguments
-///
-/// * `input_path` - Path to the input file to encrypt.
-/// * `output_path` - Path where the encrypted file will be saved.
-/// * `key` - Symmetric key for encryption.
-///
-/// # Errors
-///
-/// Returns an error if file operations fail or encryption fails.
+/// Encrypts a file stored at `input_path` using the provided symmetric `key`, and stores it in `output_path`.
 pub fn encrypt_file(
     input_path: &str,
     output_path: &str,
@@ -120,17 +95,8 @@ pub fn encrypt_file(
     Ok(())
 }
 
-/// Decrypts a file using the provided symmetric key.
-///
-/// # Arguments
-///
-/// * `input_path` - Path to the encrypted input file.
-/// * `output_path` - Path where the decrypted file will be saved.
-/// * `key` - Symmetric key for decryption.
-///
-/// # Errors
-///
-/// Returns an error if file operations fail or decryption fails.
+/// Decrypts the bytes from `input_bytes` using the symmetric `key`, and stores the plaintext in `output_path`.
+
 pub fn decrypt_file(
     input_bytes: Vec<u8>,
     output_path: &str,
@@ -157,14 +123,12 @@ pub fn decrypt_file(
 
 #[test]
 fn test_encryption_decryption_flow() -> Result<(), Box<dyn Error>> {
-    // Initialize sodiumoxide
-    sodiumoxide::init().map_err(|_| "Failed to initiate sodiumoxide")?;
-
     // Make sure this path points to your Ed25519 private key file
     let key_path = Path::new("/Users/juanrios/.ssh/id_ed25519");
 
     // Load the symmetric key from the private key
-    let symmetric_key = load_ed25519_private_key_and_derive_symmetric_key(key_path)?;
+    let symmetric_key =
+        load_ed25519_private_key_and_derive_symmetric_key(key_path.to_string_lossy().to_string())?;
 
     // Sample data to encrypt
     let original_data = b"Hello, this is a test message!";
@@ -190,9 +154,16 @@ fn test_encryption_decryption_flow() -> Result<(), Box<dyn Error>> {
         &symmetric_key,
     )?;
 
+    // read the encrypted data
+    let mut encrypted_data = Vec::new();
+    {
+        let mut encrypted_file = File::open(&encrypted_path)?;
+        encrypted_file.read_to_end(&mut encrypted_data)?;
+    }
+
     // Decrypt the file
     decrypt_file(
-        encrypted_path.to_str().unwrap(),
+        encrypted_data,
         decrypted_path.to_str().unwrap(),
         &symmetric_key,
     )?;

@@ -6,6 +6,7 @@ use sp_crypto_hashing::blake2_256;
 use std::env;
 use tokio_postgres::{Client, NoTls};
 
+/// Request for storing data to be sent to the server. Contains the files, and the ed25516 verifying key, and signature.
 #[derive(Debug, Serialize, Deserialize)]
 struct EncryptedFileRequest {
     files: Vec<Vec<u8>>,
@@ -13,6 +14,7 @@ struct EncryptedFileRequest {
     signature: Vec<u8>,
 }
 
+/// Request for retrieving a file from the server. Contains the index of the file, and the merkle root of the files.
 #[derive(Debug, Serialize, Deserialize)]
 struct FileRequest {
     index: usize,
@@ -39,14 +41,16 @@ async fn upload_files(
 ) -> impl Responder {
     let client = &data.db;
 
-    // Verify the signature
+    // File hashes are going to be used as leafs of the merkle tree
     let file_hashes: Vec<[u8; 32]> = request
         .files
         .iter()
         .map(|file| blake2_256(file.as_slice())) // Example hash function, change as needed
         .collect();
+    // The combined hash is the message that was signed.
     let files_combined_hash = blake2_256(&file_hashes.concat());
 
+    // Verify if the supplied signature is valid
     if !verify_signature(
         request.verifying_key,
         request.signature.clone(),
@@ -59,7 +63,8 @@ async fn upload_files(
     let merkle_tree = MerkleTree::from(file_hashes);
     let merkle_root = hex::encode(merkle_tree.root());
 
-    // Insert files and Merkle root into PostgreSQL
+    // Insert files into PostgreSQL. Each file is a row in the "files" table.
+    // Each row contains an id, the merkle root, the file index, and the file content (encrypted by the client).
     for (index, file) in request.files.iter().enumerate() {
         let query = "INSERT INTO files (merkle_root, file_index, file_content) VALUES ($1, $2, $3)";
         if let Err(e) = client
@@ -74,7 +79,7 @@ async fn upload_files(
     HttpResponse::Ok().json(merkle_root)
 }
 
-// Get file endpoint to retrieve file and Merkle proof from PostgreSQL
+// Get file endpoint to retrieve file from PostgreSQL and construct a merkle proof.
 async fn get_file(data: web::Data<AppState>, request: web::Json<FileRequest>) -> impl Responder {
     let client = &data.db;
 
@@ -100,6 +105,7 @@ async fn get_file(data: web::Data<AppState>, request: web::Json<FileRequest>) ->
         .await
         .expect("Error fetching files");
 
+    // Retrieve all files from the database that match the same merkle root
     let files: Vec<[u8; 32]> = rows
         .iter()
         .map(|row| {
@@ -108,11 +114,15 @@ async fn get_file(data: web::Data<AppState>, request: web::Json<FileRequest>) ->
         })
         .collect();
 
+    // Construct the Merkle tree from the files
     let merkle_tree = MerkleTree::from(files);
+
+    // Construct the proof
     let proof = merkle_tree
         .proof(request.index)
         .expect("Failed to generate Merkle proof");
 
+    // Return the file content and the proof
     HttpResponse::Ok().json((file_content, proof))
 }
 
