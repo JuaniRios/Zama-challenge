@@ -54,13 +54,13 @@ enum Commands {
 struct EncryptedFileRequest {
     files: Vec<Vec<u8>>,
     verifying_key: [u8; 32],
-    signature: Vec<u8>,
 }
 
 #[derive(Serialize)]
 struct FileRequest {
     index: usize,
-    merkle_root: String, // hex encoded hash digest ([u8; 32])
+    merkle_root: String, // Hex-encoded hash digest ([u8; 32])
+    signature: Vec<u8>,  // Signature of hash(index_bytes || merkle_root_bytes)
 }
 
 #[tokio::main]
@@ -126,7 +126,7 @@ fn get_config_file_path() -> PathBuf {
 
 fn get_merkle_roots_folder_path() -> PathBuf {
     let mut path = config_dir().expect("Failed to find config directory");
-    path.push("my-cli");
+    path.push("zama-challenge");
     fs::create_dir_all(&path).expect("Failed to create config directory");
     path.push("merkle_roots");
     path
@@ -189,7 +189,6 @@ fn encrypt_and_merkelize_files(folder_path: &str) {
     let merkle_root_folder = get_merkle_roots_folder_path().join(merkle_root_hex_encoded.clone());
     fs::rename(&temp_folder, &merkle_root_folder).expect("Failed to rename temp folder");
     println!("Merkle root: {}", merkle_root_hex_encoded);
-
 }
 
 // Function to show all stored Merkle roots
@@ -217,7 +216,6 @@ fn show_merkle_roots() {
 
 async fn send_to_cloud_and_delete_encrypted_files(merkle_root: String) {
     let client = Client::new();
-    // Modify the URL to the correct server endpoint. By default, it's set to localhost
     let url = UPLOAD_ENDPOINT;
 
     // Gather the encrypted files
@@ -254,27 +252,13 @@ async fn send_to_cloud_and_delete_encrypted_files(merkle_root: String) {
         encrypted_files.push(file_content);
     }
 
-    // Load the ed25519 signing key
-    let signing_key = crypto::load_ed25519_signing_key_from_path(get_ssh_key_path())
-        .expect("Couldn't read the ed25519 private key file");
-
-    // Construct the message to sign. In this case, we hash the concatenated hashes of the files.
-    let file_hashes: Vec<[u8; 32]> = encrypted_files
-        .iter()
-        .map(|file| blake2_256(file.as_slice())) // Example hash function, change as needed
-        .collect();
-    let files_combined_hash = blake2_256(&file_hashes.concat());
-
-    // Sign the message
-    let signature = signing_key.sign(files_combined_hash.as_slice());
-
-    // Extract the verifying key (i.e. the public key).
-    let verifying_key = signing_key.verifying_key();
+    // Load the ed25519 verifying key (public key)
+    let verifying_key = crypto::load_ed25519_signing_key_from_path(get_ssh_key_path())
+        .expect("Couldn't read the ed25519 public key file").verifying_key();
 
     let request_body = EncryptedFileRequest {
         files: encrypted_files,
         verifying_key: verifying_key.to_bytes(),
-        signature: signature.to_vec(),
     };
 
     // Send the files to the server
@@ -288,7 +272,7 @@ async fn send_to_cloud_and_delete_encrypted_files(merkle_root: String) {
     // Check if the server responded with a success status
     if response.status().is_success() {
         println!("Files uploaded successfully. Deleting local files...");
-        // Code to delete the encrypted_files_folder
+        // Delete the encrypted_files_folder
         fs::remove_dir_all(&encrypted_files_folder).expect("Failed to delete local files");
     } else {
         println!("Failed to upload files. Status: {:?}", response.status());
@@ -297,16 +281,35 @@ async fn send_to_cloud_and_delete_encrypted_files(merkle_root: String) {
 
 async fn restore_encrypted_file_from_cloud(merkle_root_hex: String, file_index: u32) {
     // Convert the hex-encoded merkle root to a HashDigest ([u8; 32])
-    let merkle_root: HashDigest = hex::decode(merkle_root_hex.clone())
+    let merkle_root: HashDigest = hex::decode(&merkle_root_hex)
         .expect("Failed to decode hex")
         .try_into()
         .expect("Invalid hash length");
     let client = Client::new();
     let url = DOWNLOAD_ENDPOINT;
 
+    // Load the ed25519 signing key
+    let signing_key = crypto::load_ed25519_signing_key_from_path(get_ssh_key_path())
+        .expect("Couldn't read the ed25519 private key file");
+
+    // Construct the message to sign: hash(index_bytes || merkle_root_bytes)
+    let index_bytes = (file_index as u32).to_be_bytes();
+    let merkle_root_bytes = hex::decode(&merkle_root_hex).expect("Failed to decode merkle root");
+
+    let mut message_data = Vec::new();
+    message_data.extend_from_slice(&index_bytes);
+    message_data.extend_from_slice(&merkle_root_bytes);
+
+    // Compute the hash of the concatenated data
+    let message_hash = blake2_256(&message_data);
+
+    // Sign the message hash
+    let signature = signing_key.sign(&message_hash);
+
     let request_body = FileRequest {
         index: file_index as usize,
         merkle_root: merkle_root_hex.clone(),
+        signature: signature.to_bytes().to_vec(),
     };
 
     // Send the request to the server
@@ -347,7 +350,7 @@ async fn restore_encrypted_file_from_cloud(merkle_root_hex: String, file_index: 
             .to_string_lossy()
             .to_string();
 
-        // Load the decryption asymmetric key from the SSH private key
+        // Load the decryption symmetric key derived from the SSH private key
         let decryption_key =
             crypto::load_ed25519_private_key_and_derive_symmetric_key(get_ssh_key_path())
                 .expect("Failed to derive decryption key");
