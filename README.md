@@ -12,26 +12,28 @@ You can use any programming language you want (we use Go and Rust internally). W
 My approach to the problem consisted of the client interacting with a CLI locally, and the server being a docker container which interacts with a PostgreSQL outside it. 
 This would allow later on to create clusters of servers all accessible from a single endpoint, and sharing the same data.
 
-After everything is setup, the flow is as follows:
+After everything is set, the flow is as follows:
 1) The user stores all of their files in a single folder. He should rename the files to u32 numbers. This is because before constructing the Merkle tree, we need to sort the files based on something, so I chose a u32. 
-2) The user calls the CLI with `set-ssh-key-location {path}`. Since most devs already have an ssh ed25519 key stored in their computer, its the least setup to just use that for encrypting the files (doing a symmetric key derivation), and also to sign the files when sending them to the server.
-3) The user calls the CLI with `encrypt-and-merkelize-files {path}`. For path, we use the one from step 1. This command will:
+2) The user calls the CLI with `set-ssh-key-location {path}` since most devs already have an SSH ed25519 key stored in their computer, it's the least setup to just use that for encrypting the files (doing a symmetric key derivation), and also to sign the files when sending them to the server.
+3) The user calls the CLI with `encrypt-and-merkelize-files {path}`. For the path, we use the one from Step 1. This command will:
     -  Create a Symmetric encryption key from the SSH key.
     -  Encrypt all files and store them in a CLI-defined folder.
     -  Calculate the Merkle root of these files
-    -  Rename the folder where the encrypted files are stored to the merkle root
-    -  Outputs the hex encoded merkle root to the CLI
+    -  Rename the folder where the encrypted files are stored to the Merkle root
+    -  Outputs the hex-encoded Merkle root to the CLI
 4) The user calls the CLI with `send-to-cloud-and-delete-encrypted-files {merkle_root}`.
 This command reads all the files under the folder named {merkle_root}, sends the files along with the ed25519 public key
-The server will receive the files, construct the merkle tree from the files. and then store in the database each file, with its Merkle root and public key.
+The server will receive the files, and construct the merkle tree from the files. and then store in the database each file, with its Merkle root and public key.
 5) At some point in the future, if the user wants to retrieve the file at index 9, which would correspond to the 10th file assuming he named his files starting with 0, he calls the CLI with `restore-file-from-cloud {merkle_root} {index}`
 The CLI will send the server the merkle_root, index, and a signature over the hash of both, so the server knows the requester owns the data. The CLI then receives the encrypted file and a Merkle proof. If the proof is valid, it will then decrypt the file, and store it under the path shown in the CLI response.
 
 ## Future optimizations
 - The linking of files to a public key can be done in a separate table by using the merkle root as the main key.
-- I use a lot of expect which will break the server and client. System needs better error handling
+- I use a lot of expect which will break the server and client. The system needs better error handling
 - Not enough tests. I didn't have time for comprehensive testing. I tested mainly by doing the flow described above. But there are many edge cases not considered which will break the client and server.
 - Container orquestration. I would have liked to add Kubernetes, load balancers, etc to make the app scalable, but again not enough time.
+- A valid concern is that our app reading into the .ssh private key can lead to security vulnerabilities. So another approach could be for this app to generate its own crypto keys and store it in the config. But reusing the ssh keys seemed more fun and a bigger challenge so I went with that.
+- If the client trusts fully the server, then maybe we don't need to encrypt the files before sending them/ constructing the Merkle tree. But from what I hear of ZAMA, this approach is more in line with their philosophy.
 
 ## Full Setup
 This setup assumes you are using a Mac with Apple Silicon.
@@ -46,7 +48,7 @@ POSTGRES_PORT=5432
 
 2) Install PostgreSQL, Docker, and Rust
    
-3) Run the following psql commands:
+3) Run the following SQL commands:
 ```
 CREATE DATABASE zama_challenge;
 CREATE USER zama_user WITH PASSWORD 'zama_password';
