@@ -26,6 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    ShowConfigFolder,
     /// Sets the path to your SSH key used for encrypting your files
     SetSSHKeyLocation {
         /// Path to the SSH private key
@@ -41,18 +42,14 @@ enum Commands {
     /// Shows all the Merkle roots created by each MerkelizeFiles command. Useful to later delete the encrypted files.
     ShowMerkleRoots,
     /// Deletes the encrypted files associated with a Merkle root. Should be done only if the Merkle tree was saved somewhere else.
-    DeleteEncryptedFiles {
+    SendToCloudAndDeleteEncryptedFiles {
         /// Merkle root of the files to delete
         merkle_root: String,
     },
     /// Restores an encrypted file from the specified Merkle root. The Merkle proof is used to verify the file's integrity.
-    RestoreEncryptedFile {
-        /// Path to the encrypted file
-        file_path: String,
-        /// Merkle root associated with the file
+    RestoreEncryptedFileFromCloud {
         merkle_root: String,
-        /// Path to the Merkle proof file
-        proof_path: String,
+        file_index: u32,
     },
     /// Decrypts all the files associated with a merkle root.
     DecryptFiles {
@@ -65,6 +62,9 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::ShowConfigFolder => {
+            println!("Config folder: {}", get_config_file_path().display());
+        }
         /// Save the SSH key path to the configuration file. This key will be used to derive a symmetric key for file encryption.
         /// Normally this would point to /home/user/.ssh/id_ed25519 or similar.
         Commands::SetSSHKeyLocation { key_path } => {
@@ -84,21 +84,19 @@ fn main() {
             show_merkle_roots();
         }
         /// Deletes the encrypted files associated with a Merkle root
-        Commands::DeleteEncryptedFiles { merkle_root } => {
-            // delete_encrypted_files(&merkle_root).expect("Failed to delete encrypted files");
+        Commands::SendToCloudAndDeleteEncryptedFiles { merkle_root } => {
+            todo!()
         }
         /// Restores an encrypted file from the specified Merkle root using a Merkle proof
-        Commands::RestoreEncryptedFile {
-            file_path,
+        Commands::RestoreEncryptedFileFromCloud {
             merkle_root,
-            proof_path,
+            file_index,
         } => {
-            // restore_encrypted_file(&file_path, &merkle_root, &proof_path)
-            //     .expect("Failed to restore encrypted file");
+            todo!()
         }
         /// Decrypts all the files associated with a Merkle root
         Commands::DecryptFiles { merkle_root } => {
-            // decrypt_files(&merkle_root).expect("Failed to decrypt files");
+            todo!()
         }
     };
 }
@@ -141,38 +139,47 @@ fn encrypt_and_merkelize_files(folder_path: &str) {
     let symmetric_encryption_key =
         crypto::load_ed25519_private_key_and_derive_symmetric_key(get_ssh_key_path())
             .expect("Failed to generate the symmetric encryption key");
-    // create temp folder inside the merkle_roots dir which will be later renamed to the merkle root
+
+    // Create temp folder inside the merkle_roots dir which will be later renamed to the merkle root
     let temp_folder = get_merkle_roots_folder_path().join("temp");
     let encrypted_files_folder = temp_folder.join("encrypted_files");
-    fs::create_dir_all(&temp_folder).expect("Failed to create temp folder");
+    fs::create_dir_all(&encrypted_files_folder).expect("Failed to create encrypted files folder");
 
     // Encrypt all files and store them in a folder inside the merkle_roots dir.
-    for (index, file) in fs::read_dir(folder_path)
+    for (index, entry) in fs::read_dir(folder_path)
         .expect("Failed to read directory")
         .enumerate()
     {
-        let file = file.expect("Failed to get file");
-        let file_path = file.path().join(index.to_string());
+        let file = entry.expect("Failed to get file");
+        let file_path = file.path(); // Keep the original file path
         let file_path_str = file_path.to_string_lossy().to_string();
-        let output_path_str = encrypted_files_folder.join(index.to_string()).to_string_lossy().to_string();
 
+        // Create an output file path with the name "1", "2", "3", etc. based on the index
+        let output_file_name = format!("{}", index + 1); // Create sequential file names starting from 1
+        let output_path_str = encrypted_files_folder
+            .join(output_file_name) // Create file inside encrypted_files folder with sequential names
+            .to_string_lossy()
+            .to_string();
+
+        // Encrypt the file
         crypto::encrypt_file(&file_path_str, &output_path_str, &symmetric_encryption_key)
             .expect("Failed to encrypt file");
     }
 
     // Calculate the merkle root of these files, and rename the folder to the merkle root
     let merkle_tree = merkle_tree::construct_tree_from_folder_path(
-        temp_folder
+        encrypted_files_folder
             .to_str()
             .expect("Failed to convert temp folder path to str"),
     );
     let merkle_root = merkle_tree.root();
     let merkle_root_hex_encoded = hex::encode(merkle_root);
 
-    // rename temp folder to merkle root
+    // Rename temp folder to merkle root
     let merkle_root_folder = get_merkle_roots_folder_path().join(merkle_root_hex_encoded);
     fs::rename(&temp_folder, &merkle_root_folder).expect("Failed to rename temp folder");
 }
+
 
 // Function to show all stored Merkle roots
 fn show_merkle_roots() {
