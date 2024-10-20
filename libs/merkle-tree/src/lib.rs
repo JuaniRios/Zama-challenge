@@ -1,3 +1,4 @@
+use std::fs;
 // We use Blake2b instead of Sha2 since its around 2x faster with the same security level.
 // I also considered using TwoX since it's even faster than Blake2b, but it's not cryptographically secure.
 use sp_crypto_hashing::blake2_256;
@@ -79,10 +80,10 @@ impl From<Vec<HashDigest>> for MerkleTree {
 }
 
 impl MerkleTree {
-    fn root(&self) -> HashDigest {
+    pub fn root(&self) -> HashDigest {
         self.nodes.last().unwrap().first().unwrap().clone()
     }
-    fn proof(&self, file_index: usize) -> Result<Vec<(HashDigest, bool)>, &str> {
+    pub fn proof(&self, file_index: usize) -> Result<Vec<(HashDigest, bool)>, &str> {
         if file_index > self.nodes[0].len() - 1 {
             return Err("File index out of bounds");
         }
@@ -118,4 +119,18 @@ pub fn verify_proof(proof: MerkleProof, root: HashDigest, file: HashDigest) -> b
         }
     }
     current_node == root
+}
+
+// Reads all the files in a folder, hashes them, and constructs a Merkle tree from the hashes.
+pub fn construct_tree_from_folder_path(folder_path: &str) -> MerkleTree {
+    let hashed_files: Vec<HashDigest> = fs::read_dir(folder_path)
+        .expect("Failed to read directory")
+        .map(|file| {
+            let file = file.expect("Failed to get file");
+            let file_path = file.path();
+            let file_content = fs::read(file_path).expect("Failed to read file");
+            blake2_256(&file_content)
+        })
+        .collect();
+    MerkleTree::from(hashed_files)
 }

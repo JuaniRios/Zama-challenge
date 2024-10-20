@@ -27,9 +27,10 @@ use std::path::Path;
 /// - The key cannot be parsed.
 /// - The symmetric key derivation fails.
 pub fn load_ed25519_private_key_and_derive_symmetric_key(
-    ssh_key_path: &Path,
+    ssh_key_path: String,
 ) -> Result<secretbox::Key, Box<dyn Error>> {
     // Read the SSH private key file
+    let ssh_key_path = Path::new(&ssh_key_path);
     let key_content_bytes = fs::read(ssh_key_path)?;
     let key_content_str = String::from_utf8_lossy(&key_content_bytes);
 
@@ -127,8 +128,7 @@ pub fn decrypt_file(
     let nonce = secretbox::Nonce::from_slice(nonce_bytes).ok_or("Failed to read nonce")?;
 
     // Decrypt the file content
-    let plaintext =
-        secretbox::open(ciphertext, &nonce, key).map_err(|_| "Decryption failed")?;
+    let plaintext = secretbox::open(ciphertext, &nonce, key).map_err(|_| "Decryption failed")?;
 
     // Write the plaintext to the output file
     let mut output = File::create(output_path)?;
@@ -140,15 +140,13 @@ pub fn decrypt_file(
 #[test]
 fn test_encryption_decryption_flow() -> Result<(), Box<dyn Error>> {
     // Initialize sodiumoxide
-    sodiumoxide::init().map_err(|_|"Failed to initiate sodiumoxide")?;
-
+    sodiumoxide::init().map_err(|_| "Failed to initiate sodiumoxide")?;
 
     // Make sure this path points to your Ed25519 private key file
     let key_path = Path::new("/Users/juanrios/.ssh/id_ed25519");
 
     // Load the symmetric key from the private key
     let symmetric_key = load_ed25519_private_key_and_derive_symmetric_key(key_path)?;
-
 
     // Sample data to encrypt
     let original_data = b"Hello, this is a test message!";
